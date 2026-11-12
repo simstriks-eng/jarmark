@@ -5,18 +5,307 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Jarmark Kalkulačka</title>
     <meta name="description" content="Rychlá přehledná kalkulačka pro prodej na jarmarku bez nutnosti rolování." />
-    <meta property="og:title" content="Jarmark Kalkulačka" />
-    <meta property="og:description" content="Rychlá přehledná kalkulačka pro prodej na jarmarku bez nutnosti rolování." />
-    <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      :root {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .font-mono-num {
+        font-family: 'JetBrains Mono', monospace;
+        font-variant-numeric: tabular-nums;
+      }
+      input[type='number']::-webkit-inner-spin-button,
+      input[type='number']::-webkit-outer-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+    </style>
   </head>
-  <body class="bg-stone-100 text-stone-900 antialiased selection:bg-amber-200 selection:text-stone-900 overflow-hidden">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+  <body class="bg-stone-200/70 text-stone-900 antialiased overflow-hidden select-none">
+    <div id="app" class="h-[100dvh] w-full flex flex-col overflow-hidden"></div>
+
+    <script>
+      const DEFAULT_PRODUCTS = [
+        { id: 'male', label: 'MALÉ', defaultPrice: 13 },
+        { id: 'fig', label: 'FIG', defaultPrice: 25 },
+        { id: 'srdce', label: 'SRDCE', defaultPrice: 25 },
+        { id: 'mik_cer', label: 'MIK/CER', defaultPrice: 30 },
+        { id: 'kun', label: 'KŮŇ', defaultPrice: 60 },
+      ];
+      const STORAGE_KEY_PRICES = 'jarmark_kalkulacka_prices_v1';
+      const QUICK_BILLS = [100, 200, 500, 1000, 2000];
+      const KEYPAD_DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+
+      let prices = {};
+      try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY_PRICES) || '{}');
+        DEFAULT_PRODUCTS.forEach((p) => {
+          prices[p.id] = typeof saved[p.id] === 'number' && saved[p.id] >= 0 ? saved[p.id] : p.defaultPrice;
+        });
+      } catch {
+        DEFAULT_PRODUCTS.forEach((p) => (prices[p.id] = p.defaultPrice));
+      }
+
+      let quantities = { male: '', fig: '', srdce: '', mik_cer: '', kun: '' };
+      let receivedCash = '';
+      let activeField = 'male';
+      let replaceOnNextDigit = true;
+      let isSettingsOpen = false;
+      let draftPrices = {};
+
+      function savePricesToStorage() {
+        try {
+          localStorage.setItem(STORAGE_KEY_PRICES, JSON.stringify(prices));
+        } catch {}
+      }
+
+      window.selectField = function (field) {
+        activeField = field;
+        replaceOnNextDigit = true;
+        render();
+      };
+
+      window.adjustQuantity = function (id, delta, ev) {
+        if (ev) ev.stopPropagation();
+        activeField = id;
+        replaceOnNextDigit = true;
+        const current = parseInt(quantities[id] || '0', 10) || 0;
+        const next = Math.max(0, current + delta);
+        quantities[id] = next === 0 ? '' : String(next);
+        render();
+      };
+
+      window.handleDigitPress = function (digit) {
+        if (activeField === 'cash') {
+          const base = replaceOnNextDigit ? '' : receivedCash;
+          receivedCash = (base + digit).replace(/^0+/, '').slice(0, 5);
+        } else {
+          const currentVal = quantities[activeField] || '';
+          const base = replaceOnNextDigit ? '' : currentVal;
+          quantities[activeField] = (base + digit).replace(/^0+/, '').slice(0, 3);
+        }
+        replaceOnNextDigit = false;
+        render();
+      };
+
+      window.handleBackspace = function () {
+        if (activeField === 'cash') {
+          receivedCash = receivedCash.slice(0, -1);
+        } else {
+          quantities[activeField] = (quantities[activeField] || '').slice(0, -1);
+        }
+        replaceOnNextDigit = false;
+        render();
+      };
+
+      window.selectBill = function (bill) {
+        const cashNum = parseInt(receivedCash || '0', 10) || 0;
+        receivedCash = cashNum === bill ? '' : String(bill);
+        activeField = 'cash';
+        replaceOnNextDigit = true;
+        render();
+      };
+
+      window.handleReset = function () {
+        quantities = { male: '', fig: '', srdce: '', mik_cer: '', kun: '' };
+        receivedCash = '';
+        activeField = 'male';
+        replaceOnNextDigit = true;
+        render();
+      };
+
+      window.openSettings = function () {
+        draftPrices = {};
+        DEFAULT_PRODUCTS.forEach((p) => {
+          draftPrices[p.id] = String(prices[p.id] ?? p.defaultPrice);
+        });
+        isSettingsOpen = true;
+        render();
+      };
+
+      window.closeSettings = function () {
+        isSettingsOpen = false;
+        render();
+      };
+
+      window.updateDraftPrice = function (id, val) {
+        draftPrices[id] = val.replace(/[^0-9]/g, '');
+      };
+
+      window.restoreDefaults = function () {
+        DEFAULT_PRODUCTS.forEach((p) => {
+          draftPrices[p.id] = String(p.defaultPrice);
+        });
+        render();
+      };
+
+      window.saveSettings = function (ev) {
+        if (ev) ev.preventDefault();
+        DEFAULT_PRODUCTS.forEach((p) => {
+          const parsed = parseInt(draftPrices[p.id] || '0', 10);
+          prices[p.id] = isNaN(parsed) || parsed < 0 ? p.defaultPrice : parsed;
+        });
+        savePricesToStorage();
+        isSettingsOpen = false;
+        render();
+      };
+
+      function render() {
+        const totalSum = DEFAULT_PRODUCTS.reduce((acc, item) => {
+          const qty = parseInt(quantities[item.id] || '0', 10) || 0;
+          return acc + qty * (prices[item.id] ?? item.defaultPrice);
+        }, 0);
+
+        const totalPieces = DEFAULT_PRODUCTS.reduce((acc, item) => {
+          return acc + (parseInt(quantities[item.id] || '0', 10) || 0);
+        }, 0);
+
+        const cashNum = parseInt(receivedCash || '0', 10) || 0;
+        const hasCashEntered = receivedCash.trim() !== '' && cashNum > 0;
+        const changeAmount = hasCashEntered ? cashNum - totalSum : 0;
+
+        const rowsHtml = DEFAULT_PRODUCTS.map((item) => {
+          const rawVal = quantities[item.id] || '';
+          const numVal = parseInt(rawVal || '0', 10) || 0;
+          const unitPrice = prices[item.id] ?? item.defaultPrice;
+          const rowSubtotal = numVal * unitPrice;
+          const hasValue = numVal > 0;
+          const isSelected = activeField === item.id;
+
+          return `
+            <div onclick="selectField('${item.id}')" class="flex-1 flex items-center justify-between gap-2 p-1.5 rounded-2xl border-2 transition-all cursor-pointer min-h-0 ${
+              isSelected ? 'bg-white border-amber-500 shadow-sm' : hasValue ? 'bg-white border-amber-300' : 'bg-white/95 border-stone-200/90'
+            }">
+              <div class="flex items-center gap-1.5 shrink-0 h-full">
+                <button type="button" onclick="adjustQuantity('${item.id}', -1, event)" ${numVal === 0 ? 'disabled' : ''} class="w-11 sm:w-12 h-full rounded-xl bg-stone-100 hover:bg-stone-200 active:bg-stone-300 disabled:opacity-35 flex items-center justify-center text-stone-800 text-2xl font-bold cursor-pointer">−</button>
+                <button type="button" onclick="selectField('${item.id}')" class="w-20 h-full flex items-center justify-center text-2xl sm:text-3xl font-extrabold font-mono-num rounded-xl border-2 transition-all cursor-pointer ${
+                  isSelected ? 'bg-amber-50 border-amber-600 text-stone-950' : hasValue ? 'bg-amber-50/60 border-amber-400 text-stone-950' : 'bg-stone-50 border-stone-300 text-stone-400'
+                }">${rawVal !== '' ? rawVal : '0'}</button>
+                <button type="button" onclick="adjustQuantity('${item.id}', 1, event)" class="w-11 sm:w-12 h-full rounded-xl bg-stone-100 hover:bg-stone-200 active:bg-stone-300 flex items-center justify-center text-stone-900 text-2xl font-bold cursor-pointer">+</button>
+              </div>
+              <div class="flex-1 flex items-center justify-between min-w-0 pl-1 pr-1.5">
+                <div class="flex items-baseline gap-1.5 truncate">
+                  <span class="text-lg sm:text-xl font-extrabold tracking-tight text-stone-900">${item.label}</span>
+                  <span class="text-base sm:text-lg font-bold text-stone-500 font-mono-num">(${unitPrice})</span>
+                </div>
+                <div class="text-right shrink-0 ml-1.5">
+                  <span class="text-lg sm:text-xl font-extrabold font-mono-num ${hasValue ? 'text-amber-600' : 'text-stone-300'}">${rowSubtotal} Kč</span>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        const billsHtml = QUICK_BILLS.map((bill) => {
+          const isSelected = cashNum === bill;
+          return `
+            <button type="button" onclick="selectBill(${bill})" class="h-9 rounded-xl font-mono-num text-xs sm:text-sm font-extrabold transition-all cursor-pointer active:scale-95 flex items-center justify-center ${
+              isSelected ? 'bg-amber-600 text-white shadow-sm' : 'bg-stone-100 hover:bg-stone-200 text-stone-800 border border-stone-200/80'
+            }">${bill}</button>
+          `;
+        }).join('');
+
+        const digitsHtml = KEYPAD_DIGITS.map((digit) => `
+          <button type="button" onclick="handleDigitPress('${digit}')" class="w-full h-full rounded-xl bg-stone-900 hover:bg-stone-800 active:bg-amber-600 active:scale-95 text-white font-mono-num text-2xl sm:text-3xl font-extrabold flex items-center justify-center shadow-sm transition-all cursor-pointer">${digit}</button>
+        `).join('');
+
+        const modalHtml = isSettingsOpen ? `
+          <div class="fixed inset-0 z-50 bg-stone-950/60 flex items-center justify-center p-4">
+            <div class="w-full max-w-sm bg-white rounded-3xl border border-stone-200 shadow-xl p-5 flex flex-col gap-4">
+              <div class="flex items-center justify-between border-b border-stone-200 pb-3">
+                <h2 class="text-lg font-extrabold text-stone-900">Nastavení cen za kus</h2>
+                <button type="button" onclick="closeSettings()" class="w-9 h-9 rounded-xl bg-stone-100 hover:bg-stone-200 flex items-center justify-center text-stone-600 font-bold">✕</button>
+              </div>
+              <form onsubmit="saveSettings(event)" class="flex flex-col gap-3">
+                <div class="flex flex-col gap-2.5">
+                  ${DEFAULT_PRODUCTS.map((item) => `
+                    <div class="flex items-center justify-between gap-3 bg-stone-50 px-3.5 py-2 rounded-2xl border border-stone-200">
+                      <label class="text-base font-extrabold text-stone-900">${item.label}</label>
+                      <div class="relative flex items-center w-28">
+                        <input type="text" inputmode="numeric" pattern="[0-9]*" value="${draftPrices[item.id] ?? ''}" oninput="updateDraftPrice('${item.id}', this.value)" class="w-full h-10 pl-3 pr-8 text-right text-lg font-extrabold font-mono-num rounded-xl bg-white border-2 border-stone-300 text-stone-900 focus:border-amber-500 outline-none" />
+                        <span class="absolute right-2.5 text-xs font-bold text-stone-400 pointer-events-none">Kč</span>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+                <div class="flex items-center justify-between gap-2 pt-2 border-t border-stone-200">
+                  <button type="button" onclick="restoreDefaults()" class="px-3 py-2.5 rounded-xl text-xs font-bold text-stone-600 hover:bg-stone-100">Výchozí ceny</button>
+                  <div class="flex items-center gap-2">
+                    <button type="button" onclick="closeSettings()" class="px-4 py-2.5 rounded-xl bg-stone-100 hover:bg-stone-200 text-xs font-bold text-stone-700">Zrušit</button>
+                    <button type="submit" class="px-4 py-2.5 rounded-xl bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold">Uložit</button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        ` : '';
+
+        document.getElementById('app').innerHTML = `
+          <main class="w-full max-w-md mx-auto h-full flex flex-col p-2 gap-1.5">
+            <header class="flex items-center justify-between gap-2 px-1 py-0.5 shrink-0">
+              <div class="flex items-baseline gap-2 min-w-0">
+                <h1 class="text-base sm:text-lg font-extrabold tracking-tight text-stone-900 whitespace-nowrap">Jarmark Kalkulačka</h1>
+                ${totalPieces > 0 ? `<span class="text-xs font-bold text-stone-600 font-mono-num whitespace-nowrap">· ${totalPieces} ks</span>` : ''}
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button type="button" onclick="openSettings()" class="w-9 h-9 rounded-xl bg-white border border-stone-300 hover:bg-stone-100 active:scale-95 flex items-center justify-center text-stone-700">⚙️</button>
+                <button type="button" onclick="handleReset()" class="flex items-center gap-1.5 px-3.5 h-9 rounded-xl bg-white border border-stone-300 hover:bg-stone-100 active:scale-95 text-stone-900 font-bold text-xs">↻ Vymazat</button>
+              </div>
+            </header>
+
+            <section class="flex-[5.6] flex flex-col gap-1.5 min-h-0">
+              ${rowsHtml}
+            </section>
+
+            <footer class="flex-[4.4] flex flex-col gap-1.5 min-h-0">
+              <div class="h-14 flex items-center justify-between px-4 rounded-2xl bg-stone-900 text-white shadow-sm shrink-0">
+                <span class="text-xs sm:text-sm font-extrabold uppercase tracking-wider text-stone-300">Celkem k úhradě</span>
+                <div class="text-4xl leading-none font-extrabold font-mono-num tracking-tight text-amber-400">${totalSum} Kč</div>
+              </div>
+
+              <div class="flex-1 bg-white rounded-2xl border-2 border-stone-200/90 p-2 flex flex-col gap-1.5 min-h-0">
+                <div class="flex flex-col gap-1.5 shrink-0">
+                  <div class="grid grid-cols-2 gap-2 items-end">
+                    <div class="flex flex-col gap-1">
+                      <div class="flex items-center justify-between px-0.5">
+                        <span class="text-[11px] font-extrabold text-stone-500 uppercase tracking-wider">Přijatá bankovka</span>
+                        <button type="button" onclick="handleBackspace()" class="px-1.5 py-0.5 rounded-md bg-stone-100 hover:bg-stone-200 text-[10px] font-bold text-stone-700">⌫ Smazat</button>
+                      </div>
+                      <button type="button" onclick="selectField('cash')" class="h-14 w-full px-3 rounded-xl flex items-center justify-between font-mono-num border-2 transition-all cursor-pointer ${
+                        activeField === 'cash' ? 'bg-amber-50 border-amber-600 text-stone-950' : hasCashEntered ? 'bg-stone-50 border-stone-400 text-stone-900' : 'bg-stone-50 border-stone-300 text-stone-400'
+                      }">
+                        <span class="text-4xl leading-none font-extrabold tracking-tight">${receivedCash !== '' ? receivedCash : '0'}</span>
+                        <span class="text-base font-extrabold text-stone-400 ml-1">Kč</span>
+                      </button>
+                    </div>
+                    <div class="flex flex-col gap-1">
+                      <div class="flex items-center px-0.5 py-0.5">
+                        <span class="text-[11px] font-extrabold text-stone-500 uppercase tracking-wider">${hasCashEntered && changeAmount < 0 ? 'Chybí doplatit' : 'Vrátit zákazníkovi'}</span>
+                      </div>
+                      <div class="h-14 px-3 rounded-xl flex items-center justify-end font-mono-num text-4xl leading-none font-extrabold tracking-tight border-2 ${
+                        !hasCashEntered ? 'bg-stone-50 border-stone-200 text-stone-300' : changeAmount >= 0 ? 'bg-emerald-50 border-emerald-400 text-emerald-700' : 'bg-rose-50 border-rose-400 text-rose-700'
+                      }">
+                        ${!hasCashEntered ? '0 Kč' : changeAmount >= 0 ? `${changeAmount} Kč` : `${Math.abs(changeAmount)} Kč`}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-5 gap-1.5">${billsHtml}</div>
+                </div>
+                <div class="flex-1 grid grid-cols-5 grid-rows-2 gap-1.5 min-h-0">${digitsHtml}</div>
+              </div>
+            </footer>
+          </main>
+          ${modalHtml}
+        `;
+      }
+
+      render();
+    </script>
   </body>
 </html>
